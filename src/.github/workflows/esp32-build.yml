@@ -1,0 +1,36 @@
+name: ESP32 Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar PlatformIO
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar PlatformIO Core
+        run: pip install platformio
+
+      - name: Compilar proyecto
+        run: pio run
+
+      - name: Subir firmware compilado
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32
+          path: |
+            .pio/build/esp32dev/firmware.bin
+            .pio/build/esp32dev/bootloader.bin
+            .pio/build/esp32dev/partitions.bin
