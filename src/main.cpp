@@ -7,8 +7,8 @@
 #define I2C_SDA 21
 #define I2C_SCL 22
 
-#define GPS_RX 16   // ESP32 recibe desde TX del NEO-6M
-#define GPS_TX 17   // ESP32 transmite hacia RX del NEO-6M
+#define GPS_RX 16
+#define GPS_TX 17
 
 MAX30105 particleSensor;
 TinyGPSPlus gps;
@@ -21,6 +21,47 @@ long lastBeat = 0;
 
 float beatsPerMinute = 0.0;
 int beatAvg = 0;
+
+bool maxConnected = false;
+
+bool initMax30102() {
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(100000);
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+    Serial.println("ERROR: MAX30102 no detectado");
+    return false;
+  }
+
+  // Configuración más estable para detección de latido
+  byte ledBrightness = 0x3F;   // 0x00 a 0xFF
+  byte sampleAverage = 4;
+  byte ledMode = 2;            // Red + IR
+  int sampleRate = 100;        // 100 Hz
+  int pulseWidth = 411;        // 411 us
+  int adcRange = 4096;         // 4096 nA
+
+  particleSensor.setup(
+    ledBrightness,
+    sampleAverage,
+    ledMode,
+    sampleRate,
+    pulseWidth,
+    adcRange
+  );
+
+  particleSensor.setPulseAmplitudeRed(0x2A);
+  particleSensor.setPulseAmplitudeIR(0x2A);
+  particleSensor.setPulseAmplitudeGreen(0);
+
+  Serial.println("MAX30102 detectado correctamente");
+  return true;
+}
+
+void setupGps() {
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+  Serial.println("GPS iniciado en UART1");
+}
 
 void printGpsData() {
   if (gps.location.isValid()) {
@@ -56,37 +97,6 @@ void printGpsData() {
   Serial.println();
 }
 
-void setupMax30102() {
-  Wire.begin(I2C_SDA, I2C_SCL);
-
-  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
-    Serial.println("ERROR: MAX30102 no detectado");
-    while (true) {
-      delay(1000);
-    }
-  }
-
-  particleSensor.setup(
-    0x1F,  // powerLevel
-    4,     // sampleAverage
-    2,     // ledMode: Red + IR
-    400,   // sampleRate
-    411,   // pulseWidth
-    4096   // adcRange
-  );
-
-  particleSensor.setPulseAmplitudeRed(0x1F);
-  particleSensor.setPulseAmplitudeIR(0x1F);
-  particleSensor.setPulseAmplitudeGreen(0);
-
-  Serial.println("MAX30102 detectado correctamente");
-}
-
-void setupGps() {
-  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
-  Serial.println("GPS iniciado en UART1");
-}
-
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -94,7 +104,7 @@ void setup() {
   Serial.println();
   Serial.println("=== Chaleco inteligente: MAX30102 + GPS ===");
 
-  setupMax30102();
+  maxConnected = initMax30102();
   setupGps();
 }
 
@@ -103,8 +113,33 @@ void loop() {
     gps.encode(gpsSerial.read());
   }
 
+  if (!maxConnected) {
+    Serial.print("IR=0 | RED=0 | BPM=0.0 | BPM_PROM=0 | ");
+    printGpsData();
+    delay(1000);
+    return;
+  }
+
   long irValue = particleSensor.getIR();
   long redValue = particleSensor.getRed();
+
+  // Detección simple de dedo presente
+  bool fingerPresent = irValue > 50000;
+
+  if (!fingerPresent) {
+    beatsPerMinute = 0.0;
+    beatAvg = 0;
+
+    Serial.print("IR=");
+    Serial.print(irValue);
+    Serial.print(" | RED=");
+    Serial.print(redValue);
+    Serial.print(" | SIN_DEDO | BPM=0.0 | BPM_PROM=0 | ");
+    printGpsData();
+
+    delay(250);
+    return;
+  }
 
   if (checkForBeat(irValue)) {
     long delta = millis() - lastBeat;
@@ -130,6 +165,7 @@ void loop() {
   Serial.print(irValue);
   Serial.print(" | RED=");
   Serial.print(redValue);
+  Serial.print(" | DEDO=SI");
   Serial.print(" | BPM=");
   Serial.print(beatsPerMinute, 1);
   Serial.print(" | BPM_PROM=");
@@ -138,5 +174,5 @@ void loop() {
 
   printGpsData();
 
-  delay(1000);
+  delay(50);
 }
