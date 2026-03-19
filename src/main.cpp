@@ -1,15 +1,19 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include "MAX30105.h"
-#include "heartRate.h"
+#include <MAX30105.h>
+#include <heartRate.h>
 #include <TinyGPSPlus.h>
+
+#define I2C_SDA 21
+#define I2C_SCL 22
+
+#define GPS_RX 16   // ESP32 recibe desde TX del NEO-6M
+#define GPS_TX 17   // ESP32 transmite hacia RX del NEO-6M
 
 MAX30105 particleSensor;
 TinyGPSPlus gps;
+HardwareSerial gpsSerial(1);
 
-// =========================
-// MAX30102
-// =========================
 const byte RATE_SIZE = 8;
 byte rates[RATE_SIZE];
 byte rateSpot = 0;
@@ -18,132 +22,69 @@ long lastBeat = 0;
 float beatsPerMinute = 0.0;
 int beatAvg = 0;
 
-// =========================
-// GPS
-// =========================
-HardwareSerial gpsSerial(2);
-static const int GPS_RX_PIN = 16; // ESP32 recibe aquí -> GPS TX
-static const int GPS_TX_PIN = 17; // ESP32 transmite aquí -> GPS RX
-static const uint32_t GPS_BAUD = 9600;
+void printGpsData() {
+  if (gps.location.isValid()) {
+    Serial.print("LAT: ");
+    Serial.print(gps.location.lat(), 6);
+    Serial.print(" | LON: ");
+    Serial.print(gps.location.lng(), 6);
+  } else {
+    Serial.print("LAT/LON: esperando fix");
+  }
 
-// =========================
-// Tiempos
-// =========================
-uint32_t lastPrint = 0;
+  Serial.print(" | SAT: ");
+  if (gps.satellites.isValid()) {
+    Serial.print(gps.satellites.value());
+  } else {
+    Serial.print("N/A");
+  }
+
+  Serial.print(" | ALT(m): ");
+  if (gps.altitude.isValid()) {
+    Serial.print(gps.altitude.meters());
+  } else {
+    Serial.print("N/A");
+  }
+
+  Serial.print(" | SPD(km/h): ");
+  if (gps.speed.isValid()) {
+    Serial.print(gps.speed.kmph());
+  } else {
+    Serial.print("N/A");
+  }
+
+  Serial.println();
+}
 
 void setupMax30102() {
-  Wire.begin(21, 22);
+  Wire.begin(I2C_SDA, I2C_SCL);
 
-  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
-    Serial.println("ERROR: MAX30102 no encontrado. Verifica cableado.");
-    while (1) {
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("ERROR: MAX30102 no detectado");
+    while (true) {
       delay(1000);
     }
   }
 
-  Serial.println("MAX30102 detectado correctamente.");
-
   particleSensor.setup(
-    60,
-    4,
-    2,
-    100,
-    411,
-    4096
+    0x1F,  // powerLevel
+    4,     // sampleAverage
+    2,     // ledMode: Red + IR
+    400,   // sampleRate
+    411,   // pulseWidth
+    4096   // adcRange
   );
 
   particleSensor.setPulseAmplitudeRed(0x1F);
   particleSensor.setPulseAmplitudeIR(0x1F);
   particleSensor.setPulseAmplitudeGreen(0);
+
+  Serial.println("MAX30102 detectado correctamente");
 }
 
-void setupGPS() {
-  gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-  Serial.println("GPS inicializado en UART2.");
-}
-
-void updateHeartRate(long irValue) {
-  bool fingerDetected = irValue > 50000;
-
-  if (fingerDetected) {
-    if (checkForBeat(irValue)) {
-      long delta = millis() - lastBeat;
-      lastBeat = millis();
-
-      beatsPerMinute = 60.0 / (delta / 1000.0);
-
-      if (beatsPerMinute > 35 && beatsPerMinute < 220) {
-        rates[rateSpot++] = (byte)beatsPerMinute;
-        rateSpot %= RATE_SIZE;
-
-        long sum = 0;
-        for (byte i = 0; i < RATE_SIZE; i++) {
-          sum += rates[i];
-        }
-        beatAvg = sum / RATE_SIZE;
-
-        Serial.println("LATIDO detectado");
-      }
-    }
-  } else {
-    beatsPerMinute = 0;
-    beatAvg = 0;
-  }
-}
-
-void updateGPS() {
-  while (gpsSerial.available() > 0) {
-    gps.encode(gpsSerial.read());
-  }
-}
-
-void printTelemetry(long irValue, long redValue) {
-  bool fingerDetected = irValue > 50000;
-
-  Serial.print("IR=");
-  Serial.print(irValue);
-
-  Serial.print(" | RED=");
-  Serial.print(redValue);
-
-  Serial.print(" | DEDO=");
-  Serial.print(fingerDetected ? "SI" : "NO");
-
-  Serial.print(" | BPM=");
-  Serial.print(beatsPerMinute, 1);
-
-  Serial.print(" | BPM_PROM=");
-  Serial.print(beatAvg);
-
-  Serial.print(" | GPS=");
-
-  if (gps.location.isValid()) {
-    Serial.print("OK");
-    Serial.print(" | LAT=");
-    Serial.print(gps.location.lat(), 6);
-    Serial.print(" | LON=");
-    Serial.print(gps.location.lng(), 6);
-  } else {
-    Serial.print("SIN_FIX");
-    Serial.print(" | LAT=--");
-    Serial.print(" | LON=--");
-  }
-
-  Serial.print(" | SAT=");
-  if (gps.satellites.isValid()) {
-    Serial.print(gps.satellites.value());
-  } else {
-    Serial.print("--");
-  }
-
-  Serial.print(" | HDOP=");
-  if (gps.hdop.isValid()) {
-    Serial.print(gps.hdop.hdop());
-  } else {
-    Serial.print("--");
-  }
-
-  Serial.println();
+void setupGps() {
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+  Serial.println("GPS iniciado en UART1");
 }
 
 void setup() {
@@ -151,29 +92,51 @@ void setup() {
   delay(1000);
 
   Serial.println();
-  Serial.println("==============================================");
-  Serial.println(" TermoGuard - BPM + GPS");
-  Serial.println(" ESP32 + MAX30102 + NEO-6M");
-  Serial.println("==============================================");
+  Serial.println("=== Chaleco inteligente: MAX30102 + GPS ===");
 
   setupMax30102();
-  setupGPS();
-
-  Serial.println("Coloca el dedo en el MAX30102.");
-  Serial.println("Lleva el GPS cerca de ventana o exterior.");
+  setupGps();
 }
 
 void loop() {
+  while (gpsSerial.available() > 0) {
+    gps.encode(gpsSerial.read());
+  }
+
   long irValue = particleSensor.getIR();
   long redValue = particleSensor.getRed();
 
-  updateHeartRate(irValue);
-  updateGPS();
+  if (checkForBeat(irValue)) {
+    long delta = millis() - lastBeat;
+    lastBeat = millis();
 
-  if (millis() - lastPrint >= 1000) {
-    lastPrint = millis();
-    printTelemetry(irValue, redValue);
+    if (delta > 0) {
+      beatsPerMinute = 60.0 / (delta / 1000.0);
+
+      if (beatsPerMinute > 40 && beatsPerMinute < 220) {
+        rates[rateSpot++] = (byte)beatsPerMinute;
+        rateSpot %= RATE_SIZE;
+
+        beatAvg = 0;
+        for (byte i = 0; i < RATE_SIZE; i++) {
+          beatAvg += rates[i];
+        }
+        beatAvg /= RATE_SIZE;
+      }
+    }
   }
 
-  delay(10);
+  Serial.print("IR=");
+  Serial.print(irValue);
+  Serial.print(" | RED=");
+  Serial.print(redValue);
+  Serial.print(" | BPM=");
+  Serial.print(beatsPerMinute, 1);
+  Serial.print(" | BPM_PROM=");
+  Serial.print(beatAvg);
+  Serial.print(" | ");
+
+  printGpsData();
+
+  delay(1000);
 }
